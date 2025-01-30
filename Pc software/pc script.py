@@ -1,10 +1,12 @@
+import serial
 import psutil
 import time
-import serial
-import pynvml  # NVIDIA GPU monitoring library
-
-# Initialize GPU monitoring
-pynvml.nvmlInit()
+try:
+    import pynvml  # Try to import NVIDIA GPU monitoring
+    nvidia_available = True
+except ImportError:
+    nvidia_available = False
+    print("NVIDIA GPU not found, or pynvml not installed.")
 
 # Configure the serial port
 SERIAL_PORT = 'COM5'  # Replace with your actual COM port
@@ -18,43 +20,36 @@ ser.rts = False  # Disable RTS
 time.sleep(2)  # Allow ESP32 to stabilize after disabling DTR/RTS
 print("Serial port initialized without reset.")
 
-def get_gpu_stats():
-    """Fetch GPU stats using pynvml"""
-    try:
-        handle = pynvml.nvmlDeviceGetHandleByIndex(0)  # For the first GPU
-        gpu_usage = pynvml.nvmlDeviceGetUtilizationRates(handle).gpu
-        gpu_temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
-        return gpu_usage, gpu_temp
-    except pynvml.NVMLError as err:
-        print("No GPU detected or error occurred:", err)
-        return None, None
-
 def get_system_stats():
-    """Fetch CPU, RAM, and Disk statistics"""
+    """Fetch CPU, RAM, and GPU statistics."""
     cpu_usage = psutil.cpu_percent(interval=1)
-    cpu_temp = psutil.sensors_temperatures().get('coretemp', [])[0].current  # CPU temperature (Windows specific)
     memory = psutil.virtual_memory()
 
-    # Fetch GPU stats if available, otherwise use CPU values for GPU
-    gpu_usage, gpu_temp = get_gpu_stats()
-    if gpu_usage is None:
-        gpu_usage = cpu_usage
-        gpu_temp = cpu_temp
-
+    # Check if NVIDIA GPU is available
+    if nvidia_available:
+        try:
+            pynvml.nvmlInit()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)  # Assuming 0th GPU (first GPU)
+            gpu_usage = pynvml.nvmlDeviceGetUsage(handle)
+            pynvml.nvmlShutdown()
+        except pynvml.NVMLError as e:
+            print("Error querying NVIDIA GPU:", e)
+            gpu_usage = 0  # Fallback if there's an error
+    else:
+        # If there's no NVIDIA GPU, fallback to a static value or another way to measure AMD GPU usage
+        gpu_usage = 0  # You could attempt to use a different method for AMD if needed
+    
     return {
-        "cpu_usage": cpu_usage,
-        "cpu_temp": cpu_temp,
-        "ram_usage": memory.percent,
-        "ram_temp": 40.0,  # Placeholder value for RAM temperature
-        "gpu_usage": gpu_usage,
-        "gpu_temp": gpu_temp
+        "cpu": cpu_usage,
+        "ram": memory.percent,
+        "gpu": gpu_usage
     }
 
 try:
     while True:
         stats = get_system_stats()
         # Send statistics as a comma-separated string
-        data = f"{stats['cpu_usage']},{stats['cpu_temp']},{stats['ram_usage']},{stats['ram_temp']},{stats['gpu_usage']},{stats['gpu_temp']}\n"
+        data = f"{stats['cpu']},{stats['ram']},{stats['gpu']}\n"
         ser.write(data.encode('utf-8'))
         print(f"Sent: {data.strip()}")
         time.sleep(1)
